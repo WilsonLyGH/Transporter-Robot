@@ -276,17 +276,16 @@ last_lifter_val = 0.0
 last_reconnect_check = 0.0
 
 
-def init_joystick():
-    """Inisialisasi ulang joystick (mendukung hot-plug / auto-reconnect)."""
+def setup_joystick(device_idx=0):
+    """Inisialisasi joystick tanpa merusak instance dictionary Pygame."""
     global j, joystick_connected, button_states, last_btn_time
     global trigger_states, last_trig_time, last_hat, dpad_active, last_lifter_val
 
     try:
-        pygame.joystick.quit()
-        pygame.joystick.init()
-
-        if pygame.joystick.get_count() > 0:
-            j = pygame.joystick.Joystick(0)
+        count = pygame.joystick.get_count()
+        if count > 0:
+            idx = min(device_idx, count - 1)
+            j = pygame.joystick.Joystick(idx)
             j.init()
             num_btns = j.get_numbuttons()
             button_states = [0] * num_btns
@@ -352,7 +351,7 @@ def format_lifter(raw_axis):
 pygame.init()
 pygame.joystick.init()
 print("🔍 Memeriksa stik controller...")
-if not init_joystick():
+if not setup_joystick():
     print("⚠️  Stik belum terdeteksi. Silakan nyalakan stik...")
     print("⏳ Menunggu stik tersambung (program tetap berjalan)...")
 
@@ -364,12 +363,17 @@ try:
         # ============================================================
         # AUTO-RECONNECT: DETEKSI EVENT STIK (HOT-PLUG)
         # ============================================================
-        for event in pygame.event.get():
+        try:
+            events = pygame.event.get()
+        except (SystemError, KeyError, Exception):
+            events = []
+
+        for event in events:
             if event.type == pygame.JOYDEVICEREMOVED:
                 handle_disconnect()
             elif event.type == pygame.JOYDEVICEADDED:
-                time.sleep(0.15)
-                if init_joystick():
+                dev_idx = getattr(event, "device_index", 0)
+                if setup_joystick(dev_idx):
                     print("\n" + "=" * 55)
                     print("✅ [RECONNECTED] Stik terhubung kembali!")
                     print("🎮 Siap dimainkan kembali!")
@@ -380,7 +384,7 @@ try:
             if now - last_reconnect_check >= 1.0:
                 last_reconnect_check = now
                 if pygame.joystick.get_count() > 0:
-                    if init_joystick():
+                    if setup_joystick(0):
                         print("\n" + "=" * 55)
                         print("✅ [RECONNECTED] Stik terhubung kembali!")
                         print("🎮 Siap dimainkan kembali!")
