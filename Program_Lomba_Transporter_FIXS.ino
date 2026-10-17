@@ -157,3 +157,5 @@ void updateLifterDynamic(void);
 void applyPreset(int pilot, int mode, bool verbose);
 void saveCalibrationToEEPROM(void);
 void loadCalibrationFromEEPROM(void);
+void sendAllPresets(void);
+void handleSetPreset(String dt);

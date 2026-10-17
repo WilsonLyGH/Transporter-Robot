@@ -146,6 +146,73 @@ void applyPreset(int pilot, int mode, bool verbose) {
   Serial3.print("   kDepan       : "); Serial3.println(kDepan, 3);
   Serial3.println("==================================\n");
 }
+
+// --- GET: kirim semua preset ke Python ---
+// Format per baris: PRESET_DATA,<PILOT>,<mode 0/1>,<kDepan>,<bMaju>,<bStrafe>,<omega>
+// Diakhiri baris: PRESET_END,<PILOT aktif>,<mode aktif>
+void sendAllPresets() {
+  for (int p = 0; p < 2; p++) {
+    for (int m = 0; m < 2; m++) {
+      Serial3.print("PRESET_DATA,");
+      Serial3.print(PILOT_NAME[p]);         Serial3.print(',');
+      Serial3.print(m);                     Serial3.print(',');
+      Serial3.print(presets[p][m].kDepan, 3);  Serial3.print(',');
+      Serial3.print(presets[p][m].bMaju, 3);   Serial3.print(',');
+      Serial3.print(presets[p][m].bStrafe, 3); Serial3.print(',');
+      Serial3.println(presets[p][m].omega, 3);
+    }
+  }
+  Serial3.print("PRESET_END,");
+  Serial3.print(PILOT_NAME[currentPilot]); Serial3.print(',');
+  Serial3.println(currentSpeedMode);
+}
+
+// --- SET: ubah satu preset langsung dari Python ---
+// Format: SET,<PILOT>,<mode 0/1>,<kDepan>,<bMaju>,<bStrafe>,<omega>
+void handleSetPreset(String dt) {
+  String f[7];
+  int n = 0, start = 0;
+  for (unsigned int i = 0; i <= dt.length() && n < 7; i++) {
+    if (i == dt.length() || dt.charAt(i) == ',') {
+      f[n++] = dt.substring(start, i);
+      start = i + 1;
+    }
+  }
+  if (n < 7) { Serial3.println("SET_ERR,format salah"); return; }
+
+  int p = -1;
+  if (f[1] == "ZAKY")  p = PILOT_ZAKY;
+  if (f[1] == "DAFFI") p = PILOT_DAFFI;
+  int m = f[2].toInt();
+  if (p < 0 || (m != 0 && m != 1)) { Serial3.println("SET_ERR,pilot/gigi salah"); return; }
+
+  float k  = f[3].toFloat();
+  float bm = f[4].toFloat();
+  float bs = f[5].toFloat();
+  float o  = f[6].toFloat();
+  // Batas sama dengan validasi saat load EEPROM
+  if (k < 0.0 || k > 1.0 || bm < 0.0 || bm > 10.0 || bs < 0.0 || bs > 10.0 || o < 0.0 || o > 10.0) {
+    Serial3.println("SET_ERR,nilai di luar batas");
+    return;
+  }
+
+  presets[p][m].kDepan  = k;
+  presets[p][m].bMaju   = bm;
+  presets[p][m].bStrafe = bs;
+  presets[p][m].omega   = o;
+
+  EEPROM.put(addrKDepan(p, m),  k);
+  EEPROM.put(addrBMaju(p, m),   bm);
+  EEPROM.put(addrBStrafe(p, m), bs);
+  EEPROM.put(addrOmega(p, m),   o);
+
+  Serial3.print("SET_OK,"); Serial3.print(PILOT_NAME[p]);
+  Serial3.println(m == 0 ? ",NORMAL" : ",MAX");
+
+  // Jika yang diedit adalah preset yang sedang aktif, langsung terapkan
+  if (p == currentPilot && m == currentSpeedMode) applyPreset(p, m, true);
+}
+
 void readSerial() {
   // 1. Membaca huruf satu per satu tanpa menghentikan program (Non-Blocking)
   while (Serial3.available()) {
@@ -223,6 +290,14 @@ void readSerial() {
       Serial.println("HOMING diperintahkan dari joystick");
       startHomingLifterB();
     }
+    // --- GET / SET preset dari Python (menu edit) ---
+    else if (dt == "GET") {
+      sendAllPresets();
+    }
+    else if (dt.startsWith("SET,")) {
+      handleSetPreset(dt);
+    }
+
     // --- PILIH PILOT (dari menu Python saat start) ---
     //   PILOT,ZAKY / PILOT,DAFFI → masuk ke gigi NORMAL pilot tsb
     else if (dt.startsWith("PILOT,")) {
