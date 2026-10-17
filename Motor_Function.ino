@@ -76,65 +76,75 @@ void inversKinematic() {
 //   BUTTON,TRIG<t>,<s>  → trigger L2/R2
 //   HAT,<x>,<y>         → D-Pad
 // ============================================================
-// Fungsi untuk memuat nilai kDepan dari EEPROM saat robot pertama kali nyala
+// Fungsi untuk memuat nilai kalibrasi dari EEPROM saat robot pertama kali nyala
 // --- FUNGSI MEMBACA MEMORI SAAT ROBOT NYALA ---
 void loadCalibrationFromEEPROM() {
-  float tKN, tKM, tBMN, tBSN, tBMM, tBSM, tON, tOM;
-  
-  EEPROM.get(ADDR_KDEPAN_NORMAL, tKN);
-  EEPROM.get(ADDR_KDEPAN_MAX, tKM);
-  EEPROM.get(ADDR_BMAJU_NORMAL, tBMN);
-  EEPROM.get(ADDR_BSTRAFE_NORMAL, tBSN);
-  EEPROM.get(ADDR_BMAJU_MAX, tBMM);
-  EEPROM.get(ADDR_BSTRAFE_MAX, tBSM);
-  EEPROM.get(ADDR_OMEGA_NORMAL, tON);
-  EEPROM.get(ADDR_OMEGA_MAX, tOM);
+  for (int p = 0; p < 2; p++) {
+    for (int m = 0; m < 2; m++) {
+      float tK, tBM, tBS, tO;
+      EEPROM.get(addrKDepan(p, m),  tK);
+      EEPROM.get(addrBMaju(p, m),   tBM);
+      EEPROM.get(addrBStrafe(p, m), tBS);
+      EEPROM.get(addrOmega(p, m),   tO);
 
-  // Validasi: Cegah data error jika EEPROM masih kosong
-  if (tKN >= 0.0 && tKN <= 1.0) savedKDepanNormal = tKN;
-  if (tKM >= 0.0 && tKM <= 1.0) savedKDepanMax = tKM;
-  if (tBMN >= 0.0 && tBMN <= 10.0) savedBMajuNormal = tBMN;
-  if (tBSN >= 0.0 && tBSN <= 10.0) savedBStrafeNormal = tBSN;
-  if (tBMM >= 0.0 && tBMM <= 10.0) savedBMajuMax = tBMM;
-  if (tBSM >= 0.0 && tBSM <= 10.0) savedBStrafeMax = tBSM;
-  if (tON >= 0.0 && tON <= 10.0) savedOmegaNormal = tON;
-  if (tOM >= 0.0 && tOM <= 10.0) savedOmegaMax = tOM;
+      // Validasi: Cegah data error jika EEPROM masih kosong (NaN gagal semua perbandingan)
+      if (tK  >= 0.0 && tK  <= 1.0)  presets[p][m].kDepan  = tK;
+      if (tBM >= 0.0 && tBM <= 10.0) presets[p][m].bMaju   = tBM;
+      if (tBS >= 0.0 && tBS <= 10.0) presets[p][m].bStrafe = tBS;
+      if (tO  >= 0.0 && tO  <= 10.0) presets[p][m].omega   = tO;
+    }
+  }
+
+  // Pilot terakhir yang dipakai
+  byte savedPilot = EEPROM.read(ADDR_ACTIVE_PILOT);
+  currentPilot = (savedPilot == PILOT_DAFFI) ? PILOT_DAFFI : PILOT_ZAKY;
 
   // Setel nilai aktif saat awal nyala (Masuk ke Gigi Normal)
-  kDepan      = savedKDepanNormal;
-  boostMaju   = savedBMajuNormal;
-  boostStrafe = savedBStrafeNormal;
-  omegaforces = savedOmegaNormal;
+  applyPreset(currentPilot, 0, false);
   
-  Serial.println("✅ Memori Kalibrasi Berhasil Dimuat!");
+  Serial.print("✅ Memori Kalibrasi Berhasil Dimuat! Pilot: ");
+  Serial.println(PILOT_NAME[currentPilot]);
 }
 
-// --- FUNGSI MENYIMPAN MEMORI ---
+// --- FUNGSI MENYIMPAN MEMORI (pilot + gigi yang sedang aktif) ---
 void saveCalibrationToEEPROM() {
-  if (currentSpeedMode == 0) { // Sedang di Gigi Normal
-    savedKDepanNormal  = kDepan;
-    savedBMajuNormal   = boostMaju;
-    savedBStrafeNormal = boostStrafe;
-    savedOmegaNormal   = omegaforces;
-    
-    EEPROM.put(ADDR_KDEPAN_NORMAL, savedKDepanNormal);
-    EEPROM.put(ADDR_BMAJU_NORMAL, savedBMajuNormal);
-    EEPROM.put(ADDR_BSTRAFE_NORMAL, savedBStrafeNormal);
-    EEPROM.put(ADDR_OMEGA_NORMAL, savedOmegaNormal);
-    Serial3.println("Tersimpan ke EEPROM (GIGI NORMAL)");
-  } 
-  else if (currentSpeedMode == 1) { // Sedang di Gigi Max
-    savedKDepanMax  = kDepan;
-    savedBMajuMax   = boostMaju;
-    savedBStrafeMax = boostStrafe;
-    savedOmegaMax   = omegaforces;
-    
-    EEPROM.put(ADDR_KDEPAN_MAX, savedKDepanMax);
-    EEPROM.put(ADDR_BMAJU_MAX, savedBMajuMax);
-    EEPROM.put(ADDR_BSTRAFE_MAX, savedBStrafeMax);
-    EEPROM.put(ADDR_OMEGA_MAX, savedOmegaMax);
-    Serial3.println("Tersimpan ke EEPROM (GIGI MAKSIMUM)");
-  }
+  int p = currentPilot;
+  int m = currentSpeedMode;
+
+  presets[p][m].kDepan  = kDepan;
+  presets[p][m].bMaju   = boostMaju;
+  presets[p][m].bStrafe = boostStrafe;
+  presets[p][m].omega   = omegaforces;
+
+  EEPROM.put(addrKDepan(p, m),  kDepan);
+  EEPROM.put(addrBMaju(p, m),   boostMaju);
+  EEPROM.put(addrBStrafe(p, m), boostStrafe);
+  EEPROM.put(addrOmega(p, m),   omegaforces);
+
+  Serial3.print("Tersimpan ke EEPROM (");
+  Serial3.print(PILOT_NAME[p]);
+  Serial3.println(m == 0 ? " - GIGI NORMAL)" : " - GIGI MAKSIMUM)");
+}
+
+// --- TERAPKAN PRESET pilot + gigi ke variabel aktif ---
+void applyPreset(int pilot, int mode, bool verbose) {
+  currentPilot     = pilot;
+  currentSpeedMode = mode;
+
+  kDepan      = presets[pilot][mode].kDepan;
+  boostMaju   = presets[pilot][mode].bMaju;
+  boostStrafe = presets[pilot][mode].bStrafe;
+  omegaforces = presets[pilot][mode].omega;
+
+  if (!verbose) return;
+  Serial3.println("\n==================================");
+  Serial3.print("PILOT: "); Serial3.println(PILOT_NAME[pilot]);
+  Serial3.println(mode == 1 ? "GIGI : MAKSIMUM (Tombol X)" : "GIGI : NORMAL (Tombol Segitiga)");
+  Serial3.print("   Speed Maju   : "); Serial3.println(boostMaju, 1);
+  Serial3.print("   Speed Strafe : "); Serial3.println(boostStrafe, 1);
+  Serial3.print("   Speed Putar  : "); Serial3.println(omegaforces, 1);
+  Serial3.print("   kDepan       : "); Serial3.println(kDepan, 3);
+  Serial3.println("==================================\n");
 }
 void readSerial() {
   // 1. Membaca huruf satu per satu tanpa menghentikan program (Non-Blocking)
@@ -213,39 +223,31 @@ void readSerial() {
       Serial.println("HOMING diperintahkan dari joystick");
       startHomingLifterB();
     }
-// --- MODE KECEPATAN (Segitiga / X) ---
+    // --- PILIH PILOT (dari menu Python saat start) ---
+    //   PILOT,ZAKY / PILOT,DAFFI → masuk ke gigi NORMAL pilot tsb
+    else if (dt.startsWith("PILOT,")) {
+      String name = dt.substring(6);
+      int pilot = -1;
+      if (name == "ZAKY")  pilot = PILOT_ZAKY;
+      if (name == "DAFFI") pilot = PILOT_DAFFI;
+
+      if (pilot >= 0) {
+        if (EEPROM.read(ADDR_ACTIVE_PILOT) != pilot) EEPROM.write(ADDR_ACTIVE_PILOT, pilot);
+        applyPreset(pilot, 0, true);
+      } else {
+        Serial3.print("Pilot tidak dikenal: "); Serial3.println(name);
+      }
+    }
+
+// --- MODE KECEPATAN (Segitiga / X) — memakai preset pilot aktif ---
     else if (dt.startsWith("SPEED,")) {
       String mode = dt.substring(6);
       
       if (mode == "MAX") {
-        currentSpeedMode = 1;
-        boostMaju   = savedBMajuMax;     
-        boostStrafe = savedBStrafeMax;   
-        kDepan      = savedKDepanMax;
-        omegaforces = savedOmegaMax; 
-        
-        Serial3.println("\n==================================");
-        Serial3.println("GIGI: MAKSIMUM (Tombol X)");
-        Serial3.print("   Speed Maju   : "); Serial3.println(boostMaju, 1);
-        Serial3.print("   Speed Strafe : "); Serial3.println(boostStrafe, 1);
-        Serial3.print("   Speed Putar  : "); Serial3.println(omegaforces, 1);
-        Serial3.print("   kDepan       : "); Serial3.println(kDepan, 3);
-        Serial3.println("==================================\n");
+        applyPreset(currentPilot, 1, true);
       } 
       else if (mode == "NORMAL") {
-        currentSpeedMode = 0;
-        boostMaju   = savedBMajuNormal;  
-        boostStrafe = savedBStrafeNormal;
-        kDepan      = savedKDepanNormal; 
-        omegaforces = savedOmegaNormal; 
-        
-        Serial3.println("\n==================================");
-        Serial3.println("GIGI: NORMAL (Tombol Segitiga)");
-        Serial3.print("   Speed Maju   : "); Serial3.println(boostMaju, 1);
-        Serial3.print("   Speed Strafe : "); Serial3.println(boostStrafe, 1);
-        Serial3.print("   Speed Putar  : "); Serial3.println(omegaforces, 1);
-        Serial3.print("   kDepan       : "); Serial3.println(kDepan, 3);
-        Serial3.println("==================================\n");
+        applyPreset(currentPilot, 0, true);
       }
     }
 

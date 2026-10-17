@@ -76,26 +76,45 @@ float boostMaju   = 2.5;  // START DI GIGI NORMAL
 float boostStrafe = 1.6;  
 float kDepan      = 0.18; // Nilai kDepan aktif saat ini
 float omegaforces = 1.2;
-// Alamat penyimpanan di EEPROM (tipe float butuh 4 byte)
-const int ADDR_KDEPAN_NORMAL = 0; 
-const int ADDR_KDEPAN_MAX    = 4;
-const int ADDR_BMAJU_NORMAL   = 8;
-const int ADDR_BSTRAFE_NORMAL = 12;
-const int ADDR_BMAJU_MAX      = 16;
-const int ADDR_BSTRAFE_MAX    = 20;
-const int ADDR_OMEGA_NORMAL   = 24; // Alamat baru untuk Omega Normal
-const int ADDR_OMEGA_MAX      = 28; // Alamat baru untuk Omega Max
-// Variabel untuk menyimpan nilai kDepan masing-masing mode di RAM
-float savedKDepanNormal = 0.18; 
-float savedKDepanMax    = 0.20; 
-float savedBMajuNormal   = 2.8;
-float savedBStrafeNormal = 1.6;
-float savedBMajuMax      = 4.2;
-float savedBStrafeMax    = 2.3;
-float savedOmegaNormal   = 1.2;
-float savedOmegaMax      = 2.5;
-// Status mode kecepatan aktif (0 = NORMAL, 1 = MAX)
-int currentSpeedMode = 0; 
+// ============================================================
+// PILOT & PRESET
+//   Pilot 0 = ZAKY, Pilot 1 = DAFFI
+//   Mode  0 = NORMAL, Mode 1 = MAX
+// ============================================================
+#define PILOT_ZAKY  0
+#define PILOT_DAFFI 1
+const char* PILOT_NAME[2] = {"ZAKY", "DAFFI"};
+
+struct SpeedPreset {
+  float kDepan;
+  float bMaju;
+  float bStrafe;
+  float omega;
+};
+
+// presets[pilot][mode] — nilai default (dipakai jika EEPROM kosong)
+SpeedPreset presets[2][2] = {
+  // ZAKY:  NORMAL                   MAX
+  { {0.12, 2.6, 2.4, 1.1}, {0.08, 3.4, 3.4, 1.6} },
+  // DAFFI: NORMAL                   MAX
+  { {0.42, 0.9, 0.6, 0.2}, {0.12, 4.2, 2.3, 0.8} }
+};
+
+// Alamat EEPROM (float = 4 byte). Tiap pilot memakai blok 32 byte:
+//   ZAKY  : 0  - 31  (sama dengan alamat lama → kalibrasi lama tetap terpakai)
+//   DAFFI : 32 - 63
+// Layout dalam blok: kN 0, kM 4, bMajuN 8, bStrafeN 12, bMajuM 16, bStrafeM 20, omegaN 24, omegaM 28
+const int EEPROM_PILOT_BLOCK = 32;
+const int ADDR_ACTIVE_PILOT  = 64;  // 1 byte: pilot terakhir yang dipilih
+
+int addrKDepan (int p, int m) { return p * EEPROM_PILOT_BLOCK + 0  + m * 4; }
+int addrBMaju  (int p, int m) { return p * EEPROM_PILOT_BLOCK + 8  + m * 8; }
+int addrBStrafe(int p, int m) { return p * EEPROM_PILOT_BLOCK + 12 + m * 8; }
+int addrOmega  (int p, int m) { return p * EEPROM_PILOT_BLOCK + 24 + m * 4; }
+
+// Status pilot & mode kecepatan aktif
+int currentPilot     = PILOT_ZAKY;
+int currentSpeedMode = 0; // 0 = NORMAL, 1 = MAX
 // -----------------------------------------
 // Variabel stick
 float Vforces = 1.4;
@@ -135,3 +154,6 @@ void readSerial(void);
 void parseData(String data);
 void Convertion(void);
 void updateLifterDynamic(void);
+void applyPreset(int pilot, int mode, bool verbose);
+void saveCalibrationToEEPROM(void);
+void loadCalibrationFromEEPROM(void);

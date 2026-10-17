@@ -7,6 +7,29 @@ BT_PORT = 'COM3'  # KUYA
 # BT_PORT = 'COM16'  # RESP
 BT_BAUD = 9600
 
+# === DAFTAR PILOT ===
+# Tiap pilot punya preset NORMAL & MAX sendiri (disimpan di EEPROM robot)
+PILOTS = ["ZAKY", "DAFFI"]
+
+
+def pilih_pilot():
+    print("\n==================================")
+    print("   PILIH PILOT")
+    for idx, nama in enumerate(PILOTS, start=1):
+        print(f"   [{idx}] {nama.capitalize()}")
+    print("==================================")
+    while True:
+        pilihan = input("Masukkan nomor / nama pilot: ").strip().upper()
+        if pilihan.isdigit() and 1 <= int(pilihan) <= len(PILOTS):
+            return PILOTS[int(pilihan) - 1]
+        if pilihan in PILOTS:
+            return pilihan
+        print("❌ Pilihan tidak valid, coba lagi.")
+
+
+PILOT_AKTIF = pilih_pilot()
+print(f"🧑‍✈️ Pilot dipilih: {PILOT_AKTIF.capitalize()}")
+
 # === INISIALISASI SERIAL (HC-12 / BLUETOOTH) ===
 bt = serial.Serial(BT_PORT, BT_BAUD, timeout=0.1)
 time.sleep(2)
@@ -23,6 +46,11 @@ j = pygame.joystick.Joystick(0)
 j.init()
 print(f"🎮 Joystick: {j.get_name()}")
 print(f"🧩 Tombol={j.get_numbuttons()}, Axis={j.get_numaxes()}, Hat={j.get_numhats()}")
+
+# === KIRIM PILOT KE ROBOT (robot masuk ke gigi NORMAL milik pilot ini) ===
+bt.write(f"PILOT,{PILOT_AKTIF}\n".encode())
+print(f"📡 Preset pilot {PILOT_AKTIF.capitalize()} dikirim ke robot")
+time.sleep(0.2)
 
 # ============================================================
 # MAPPING TOMBOL (SPEED & KALIBRASI KDEPAN)

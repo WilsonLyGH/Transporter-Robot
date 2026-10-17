@@ -1,6 +1,8 @@
 void inisialisasi(){
-  myServo1.attach(8); 
-  myServo2.attach(6);
+  // Rentang pulsa diperlebar (default 544-2400us) agar sudut putar fisik lebih besar.
+  // Jika servo bergetar/berdengung di ujung, persempit lagi (mis. 550, 2450).
+  myServo1.attach(8, 500, 2500); 
+  myServo2.attach(6, 500, 2500);
   Serial.begin(9600);
   Serial3.begin(9600);
   // bluetooth.begin("RESP Robot Transporter");
