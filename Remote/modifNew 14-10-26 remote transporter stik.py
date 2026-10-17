@@ -1,6 +1,7 @@
 import pygame
 import serial
 import time
+import msvcrt  # baca keyboard non-blocking (Windows) untuk ganti pilot
 
 # === KONFIGURASI ===
 BT_PORT = 'COM3'  # KUYA
@@ -48,9 +49,177 @@ print(f"🎮 Joystick: {j.get_name()}")
 print(f"🧩 Tombol={j.get_numbuttons()}, Axis={j.get_numaxes()}, Hat={j.get_numhats()}")
 
 # === KIRIM PILOT KE ROBOT (robot masuk ke gigi NORMAL milik pilot ini) ===
-bt.write(f"PILOT,{PILOT_AKTIF}\n".encode())
-print(f"📡 Preset pilot {PILOT_AKTIF.capitalize()} dikirim ke robot")
+def kirim_pilot(nama):
+    global PILOT_AKTIF
+    PILOT_AKTIF = nama
+    bt.write(f"PILOT,{nama}\n".encode())
+    print(f"📡 Preset pilot {nama.capitalize()} dikirim ke robot (gigi NORMAL)")
+
+
+kirim_pilot(PILOT_AKTIF)
 time.sleep(0.2)
+
+# === GANTI PILOT & EDIT PRESET TANPA RESTART ===
+#   1 / Z  → Zaky
+#   2 / D  → Daffi
+#   P      → ganti ke pilot berikutnya
+#   L      → List (lihat semua preset yang tersimpan di robot)
+#   E      → Edit nilai preset (kDepan, bMaju, bStrafe, omega)
+PILOT_KEYS = {"1": "ZAKY", "Z": "ZAKY", "2": "DAFFI", "D": "DAFFI"}
+print("⌨️  Keyboard: [1/Z] Zaky  [2/D] Daffi  [P] Next Pilot  [L] Lihat Preset  [E] Edit Preset")
+
+
+def tampilkan_semua_preset():
+    """Minta robot mengirim data semua preset lalu tampilkan ke terminal."""
+    print("\n⏳ Mengambil data preset dari robot...")
+    safe_send("GET\n")
+    data_presets = {}
+    timeout = time.time() + 2.0
+    active_info = ""
+
+    while time.time() < timeout:
+        if bt.in_waiting > 0:
+            line = bt.readline().decode('utf-8', errors='ignore').strip()
+            if line.startswith("PRESET_DATA,"):
+                # Format: PRESET_DATA,PILOT,MODE,kDepan,bMaju,bStrafe,omega
+                parts = line.split(',')
+                if len(parts) >= 7:
+                    p_nama = parts[1]
+                    m_idx  = "NORMAL" if parts[2] == "0" else "MAX"
+                    k_val  = parts[3]
+                    bm_val = parts[4]
+                    bs_val = parts[5]
+                    om_val = parts[6]
+                    if p_nama not in data_presets:
+                        data_presets[p_nama] = {}
+                    data_presets[p_nama][m_idx] = (k_val, bm_val, bs_val, om_val)
+            elif line.startswith("PRESET_END,"):
+                parts = line.split(',')
+                if len(parts) >= 3:
+                    m_str = "NORMAL" if parts[2] == "0" else "MAX"
+                    active_info = f"Aktif saat ini: {parts[1]} ({m_str})"
+                break
+        time.sleep(0.01)
+
+    if not data_presets:
+        print("⚠️ Tidak ada respon dari robot (pastikan Arduino terhubung).")
+        return data_presets
+
+    print("\n" + "=" * 55)
+    print(" 📋 DATA PRESET DI ROBOT (EEPROM)")
+    print("=" * 55)
+    for p_nama in ["ZAKY", "DAFFI"]:
+        if p_nama in data_presets:
+            print(f" 🧑‍✈️ [{p_nama}]")
+            for m_str in ["NORMAL", "MAX"]:
+                if m_str in data_presets[p_nama]:
+                    k, bm, bs, om = data_presets[p_nama][m_str]
+                    print(f"    - {m_str:<6} : kDepan={k:<5} | bMaju={bm:<4} | bStrafe={bs:<4} | Omega={om:<4}")
+    if active_info:
+        print("-" * 55)
+        print(f" ℹ️  {active_info}")
+    print("=" * 55 + "\n")
+    return data_presets
+
+
+def menu_edit_preset():
+    """Mode interaktif untuk mengedit nilai preset secara langsung."""
+    # Berhentikan robot terlebih dahulu demi keamanan
+    safe_send("AXIS,0.000,0.000,0.000\n")
+    safe_send("LIFTER_SPD,0.000\n")
+
+    print("\n" + "#" * 55)
+    print(" 🛠️  MENU EDIT PRESET (LIVE TUNING MANUAL)")
+    print(" (Robot dihentikan sementara selama mode edit)")
+    print("#" * 55)
+
+    # Ambil data saat ini agar user tahu nilai lama
+    data_presets = tampilkan_semua_preset()
+
+    # 1. Pilih Pilot
+    print("Pilih Pilot yang ingin diedit:")
+    print(f" [1] Zaky  {' (Aktif)' if PILOT_AKTIF == 'ZAKY' else ''}")
+    print(f" [2] Daffi {' (Aktif)' if PILOT_AKTIF == 'DAFFI' else ''}")
+    p_in = input(f"Pilihan Pilot [Enter = {PILOT_AKTIF}]: ").strip().upper()
+    if p_in in ["1", "Z", "ZAKY"]:
+        target_pilot = "ZAKY"
+    elif p_in in ["2", "D", "DAFFI"]:
+        target_pilot = "DAFFI"
+    else:
+        target_pilot = PILOT_AKTIF
+
+    # 2. Pilih Mode Gigi
+    print(f"\nPilih Mode Gigi untuk {target_pilot}:")
+    print(" [0] NORMAL (Segitiga)")
+    print(" [1] MAX    (Tombol X)")
+    m_in = input("Pilihan Gigi [0/1, Enter = 0 / NORMAL]: ").strip()
+    if m_in in ["1", "MAX", "M"]:
+        target_mode_idx = "1"
+        mode_label = "MAX"
+    else:
+        target_mode_idx = "0"
+        mode_label = "NORMAL"
+
+    # Ambil nilai default/lama sebagai acuan
+    default_vals = ("0.18", "2.8", "1.6", "1.2")
+    if target_pilot in data_presets and mode_label in data_presets[target_pilot]:
+        default_vals = data_presets[target_pilot][mode_label]
+
+    print(f"\n✏️ Mengedit [{target_pilot} - {mode_label}]:")
+    print("*(Tekan Enter langsung jika tidak ingin mengubah nilai)")
+
+    def prompt_float(nama, current_val):
+        while True:
+            val_in = input(f" - {nama:<8} [saat ini: {current_val}]: ").strip()
+            if val_in == "":
+                return current_val
+            try:
+                f = float(val_in)
+                return str(f)
+            except ValueError:
+                print("   ❌ Masukkan angka desimal yang valid (misal: 0.15 atau 2.5)!")
+
+    k_new  = prompt_float("kDepan",  default_vals[0])
+    bm_new = prompt_float("bMaju",   default_vals[1])
+    bs_new = prompt_float("bStrafe", default_vals[2])
+    om_new = prompt_float("omega",   default_vals[3])
+
+    cmd_set = f"SET,{target_pilot},{target_mode_idx},{k_new},{bm_new},{bs_new},{om_new}\n"
+    print(f"\n📡 Mengirim ke robot: {cmd_set.strip()}")
+    safe_send(cmd_set)
+
+    # Tunggu feedback dari Arduino
+    time.sleep(0.3)
+    while bt.in_waiting > 0:
+        balasan = bt.readline().decode('utf-8', errors='ignore').strip()
+        if balasan:
+            print(f"🤖 Robot: {balasan}")
+
+    print("\n✅ Nilai preset berhasil diperbarui & disimpan di EEPROM!")
+    print("🎮 Kembali ke kontrol joystick...\n")
+    pygame.event.clear()
+
+
+def cek_keyboard_pilot():
+    while msvcrt.kbhit():
+        key = msvcrt.getwch().upper()
+        if key in PILOT_KEYS:
+            target = PILOT_KEYS[key]
+            if target != PILOT_AKTIF:
+                print(f"\n🔄 Ganti pilot: {PILOT_AKTIF.capitalize()} → {target.capitalize()}")
+                kirim_pilot(target)
+            else:
+                print(f"ℹ️  Pilot {target.capitalize()} sudah aktif")
+        elif key == "P":
+            target = PILOTS[(PILOTS.index(PILOT_AKTIF) + 1) % len(PILOTS)]
+            print(f"\n🔄 Ganti pilot: {PILOT_AKTIF.capitalize()} → {target.capitalize()}")
+            kirim_pilot(target)
+        elif key == "L":
+            tampilkan_semua_preset()
+        elif key == "E":
+            menu_edit_preset()
+        else:
+            continue
 
 # ============================================================
 # MAPPING TOMBOL (SPEED & KALIBRASI KDEPAN)
@@ -136,6 +305,9 @@ try:
     while True:
         pygame.event.pump()
         now = time.time()
+
+        # --- Cek tombol keyboard untuk ganti pilot ---
+        cek_keyboard_pilot()
 
         # ============================================================
         # BACA PESAN DARI ARDUINO & TAMPILKAN KE TERMINAL PYTHON
