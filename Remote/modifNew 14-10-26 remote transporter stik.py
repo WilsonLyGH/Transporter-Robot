@@ -36,23 +36,19 @@ bt = serial.Serial(BT_PORT, BT_BAUD, timeout=0.1)
 time.sleep(2)
 print(f"✅ Terhubung ke modul komunikasi di {BT_PORT}")
 
-# === INISIALISASI JOYSTICK ===
-pygame.init()
-pygame.joystick.init()
 
-if pygame.joystick.get_count() == 0:
-    raise Exception("🎮 Tidak ada joystick terdeteksi!")
+def safe_send(msg):
+    try:
+        bt.write(msg.encode())
+    except serial.SerialException as e:
+        print(f"⚠️ Serial error: {e}")
 
-j = pygame.joystick.Joystick(0)
-j.init()
-print(f"🎮 Joystick: {j.get_name()}")
-print(f"🧩 Tombol={j.get_numbuttons()}, Axis={j.get_numaxes()}, Hat={j.get_numhats()}")
 
 # === KIRIM PILOT KE ROBOT (robot masuk ke gigi NORMAL milik pilot ini) ===
 def kirim_pilot(nama):
     global PILOT_AKTIF
     PILOT_AKTIF = nama
-    bt.write(f"PILOT,{nama}\n".encode())
+    safe_send(f"PILOT,{nama}\n")
     print(f"📡 Preset pilot {nama.capitalize()} dikirim ke robot (gigi NORMAL)")
 
 
@@ -257,31 +253,82 @@ LIFTER_SEND_INTERVAL = 0.05
 MAX_DYNAMIC_SPEED    = 900.0
 
 # ============================================================
-# STATE
+# STATE JOYSTICK & AUTO-RECONNECT
 # ============================================================
-button_states        = [0] * j.get_numbuttons()
-trigger_states       = [0, 0]
+j = None
+joystick_connected = False
+button_states = []
+trigger_states = [0, 0]
 trigger_axis_indices = [4, 5]
-TRIGGER_THRESHOLD    = 0.5
-is_slow_mode         = False
-last_hat             = (0, 0)
-dpad_active          = False
+TRIGGER_THRESHOLD = 0.5
+is_slow_mode = False
+last_hat = (0, 0)
+dpad_active = False
 
-last_btn_time        = [0.0] * j.get_numbuttons()
-last_trig_time       = [0.0, 0.0]
-last_hat_time        = 0.0
-last_hat_send        = 0.0  # Untuk tracking DPAD_REPEAT_INTERVAL
-last_analog_time     = 0.0
-last_lifter_send     = 0.0
+last_btn_time = []
+last_trig_time = [0.0, 0.0]
+last_hat_time = 0.0
+last_hat_send = 0.0  # Untuk tracking DPAD_REPEAT_INTERVAL
+last_analog_time = 0.0
+last_lifter_send = 0.0
 last_lifter_cmd_time = 0.0
-last_lifter_val      = 0.0
+last_lifter_val = 0.0
+last_reconnect_check = 0.0
 
 
-def safe_send(msg):
+def init_joystick():
+    """Inisialisasi ulang joystick (mendukung hot-plug / auto-reconnect)."""
+    global j, joystick_connected, button_states, last_btn_time
+    global trigger_states, last_trig_time, last_hat, dpad_active, last_lifter_val
+
     try:
-        bt.write(msg.encode())
-    except serial.SerialException as e:
-        print(f"⚠️ Serial error: {e}")
+        pygame.joystick.quit()
+        pygame.joystick.init()
+
+        if pygame.joystick.get_count() > 0:
+            j = pygame.joystick.Joystick(0)
+            j.init()
+            num_btns = j.get_numbuttons()
+            button_states = [0] * num_btns
+            last_btn_time = [0.0] * num_btns
+            trigger_states = [0, 0]
+            last_trig_time = [0.0, 0.0]
+            last_hat = (0, 0)
+            dpad_active = False
+            last_lifter_val = 0.0
+            joystick_connected = True
+            print(f"🎮 Joystick: {j.get_name()}")
+            print(f"🧩 Tombol={num_btns}, Axis={j.get_numaxes()}, Hat={j.get_numhats()}")
+            return True
+    except Exception as e:
+        pass
+
+    j = None
+    joystick_connected = False
+    return False
+
+
+def handle_disconnect():
+    """Menangani ketika stik terputus / idle sleep demi keamanan robot."""
+    global joystick_connected, j, dpad_active, last_hat, last_lifter_val
+
+    if joystick_connected:
+        joystick_connected = False
+        j = None
+        dpad_active = False
+        last_hat = (0, 0)
+        last_lifter_val = 0.0
+
+        # Kirim sinyal henti ke robot segera
+        safe_send("AXIS,0.000,0.000,0.000\n")
+        safe_send("LIFTER_SPD,0.000\n")
+        safe_send("HAT,0,0\n")
+
+        print("\n" + "=" * 55)
+        print("⚠️  [STIK TERPUTUS / IDLE SLEEP]")
+        print("🛑 Robot otomatis dihentikan demi keamanan!")
+        print("⏳ Menunggu stik tersambung kembali... (tekan tombol di stik)")
+        print("=" * 55 + "\n")
 
 
 def apply_deadzone(val, zone):
@@ -301,10 +348,43 @@ def format_lifter(raw_axis):
     return round(sign * (abs(val) - LIFTER_DEADZONE) / (1.0 - LIFTER_DEADZONE), 3)
 
 
+# === INISIALISASI PYGAME & STIK AWAL ===
+pygame.init()
+pygame.joystick.init()
+print("🔍 Memeriksa stik controller...")
+if not init_joystick():
+    print("⚠️  Stik belum terdeteksi. Silakan nyalakan stik...")
+    print("⏳ Menunggu stik tersambung (program tetap berjalan)...")
+
+
 try:
     while True:
-        pygame.event.pump()
         now = time.time()
+
+        # ============================================================
+        # AUTO-RECONNECT: DETEKSI EVENT STIK (HOT-PLUG)
+        # ============================================================
+        for event in pygame.event.get():
+            if event.type == pygame.JOYDEVICEREMOVED:
+                handle_disconnect()
+            elif event.type == pygame.JOYDEVICEADDED:
+                time.sleep(0.15)
+                if init_joystick():
+                    print("\n" + "=" * 55)
+                    print("✅ [RECONNECTED] Stik terhubung kembali!")
+                    print("🎮 Siap dimainkan kembali!")
+                    print("=" * 55 + "\n")
+
+        # Fallback reconnect jika event tidak tertembak (cek berkala tiap 1 detik)
+        if not joystick_connected:
+            if now - last_reconnect_check >= 1.0:
+                last_reconnect_check = now
+                if pygame.joystick.get_count() > 0:
+                    if init_joystick():
+                        print("\n" + "=" * 55)
+                        print("✅ [RECONNECTED] Stik terhubung kembali!")
+                        print("🎮 Siap dimainkan kembali!")
+                        print("=" * 55 + "\n")
 
         # --- Cek tombol keyboard untuk ganti pilot ---
         cek_keyboard_pilot()
@@ -322,120 +402,131 @@ try:
         # ============================================================
 
         # ============================================================
-        # ANALOG KIRI → translasi robot (20 Hz)
-        # Skip kirim AXIS saat D-pad aktif agar Vx/Vy tidak tertimpa.
+        # PROSES INPUT STIK (HANYA JIKA TERKONEKSI)
         # ============================================================
-        if now - last_analog_time >= ANALOG_INTERVAL:
-            if not dpad_active:
-                x_left = apply_deadzone(j.get_axis(0), ANALOG_DEADZONE)
-                y_left = apply_deadzone(j.get_axis(1), ANALOG_DEADZONE)
-                safe_send(f"AXIS,{x_left:.3f},{y_left:.3f},0.000\n")
-            last_analog_time = now
+        if joystick_connected and j is not None:
+            try:
+                # ============================================================
+                # ANALOG KIRI → translasi robot (20 Hz)
+                # Skip kirim AXIS saat D-pad aktif agar Vx/Vy tidak tertimpa.
+                # ============================================================
+                if now - last_analog_time >= ANALOG_INTERVAL:
+                    if not dpad_active:
+                        x_left = apply_deadzone(j.get_axis(0), ANALOG_DEADZONE)
+                        y_left = apply_deadzone(j.get_axis(1), ANALOG_DEADZONE)
+                        safe_send(f"AXIS,{x_left:.3f},{y_left:.3f},0.000\n")
+                    last_analog_time = now
 
-        # ============================================================
-        # ANALOG KANAN Y → Lifter DINAMIS
-        # ============================================================
-        y_right    = j.get_axis(3)
-        lifter_val = format_lifter(y_right)
+                # ============================================================
+                # ANALOG KANAN Y → Lifter DINAMIS
+                # ============================================================
+                if j.get_numaxes() > 3:
+                    y_right    = j.get_axis(3)
+                    lifter_val = format_lifter(y_right)
 
-        value_changed = abs(lifter_val - last_lifter_val) > 0.02
-        is_active     = abs(lifter_val) > 0.0
-        interval_ok   = (now - last_lifter_send) >= LIFTER_SEND_INTERVAL
+                    value_changed = abs(lifter_val - last_lifter_val) > 0.02
+                    is_active     = abs(lifter_val) > 0.0
+                    interval_ok   = (now - last_lifter_send) >= LIFTER_SEND_INTERVAL
 
-        if value_changed or (is_active and interval_ok):
-            safe_send(f"LIFTER_SPD,{lifter_val:.3f}\n")
-            last_lifter_send = now
-            last_lifter_val  = lifter_val
-            if value_changed:
-                if lifter_val == 0.0:
-                    print("Lifter: STOP")
-                else:
-                    print(f"Lifter: {'NAIK' if lifter_val > 0 else 'TURUN'} spd={lifter_val:.3f}")
+                    if value_changed or (is_active and interval_ok):
+                        safe_send(f"LIFTER_SPD,{lifter_val:.3f}\n")
+                        last_lifter_send = now
+                        last_lifter_val  = lifter_val
+                        if value_changed:
+                            if lifter_val == 0.0:
+                                print("Lifter: STOP")
+                            else:
+                                print(f"Lifter: {'NAIK' if lifter_val > 0 else 'TURUN'} spd={lifter_val:.3f}")
 
-        # ============================================================
-        # TOMBOL DIGITAL
-        # ============================================================
-        for i in range(j.get_numbuttons()):
-            pressed = j.get_button(i)
-            if pressed != button_states[i]:
-                if pressed == 1:
-                    if i in LIFTER_BTN_INDICES:
-                        if now - last_lifter_cmd_time < LIFTER_COOLDOWN:
-                            print(f"⛔ [{i}] lifter cooldown")
-                            button_states[i] = pressed
-                            continue
-                        if now - last_btn_time[i] >= DEBOUNCE_LIFTER:
-                            button_states[i]     = pressed
-                            last_btn_time[i]     = now
-                            last_lifter_cmd_time = now
-                            cmd_type, height, label = PRESET_MAP[i]
-                            if cmd_type == "HOMING":
-                                safe_send("HOMING\n")
-                            elif cmd_type == "PRESET":
-                                safe_send(f"PRESET,{height:.1f}\n")
-                            elif cmd_type == "CUSTOM_CMD":
-                                safe_send(height) # height di sini berisi perintah string seperti "SPEED,MAX\n"
-                            elif cmd_type == "DISABLED":
-                                pass
-                                
-                            print(f"🎯 {label}")
+                # ============================================================
+                # TOMBOL DIGITAL
+                # ============================================================
+                for i in range(j.get_numbuttons()):
+                    pressed = j.get_button(i)
+                    if pressed != button_states[i]:
+                        if pressed == 1:
+                            if i in LIFTER_BTN_INDICES:
+                                if now - last_lifter_cmd_time < LIFTER_COOLDOWN:
+                                    print(f"⛔ [{i}] lifter cooldown")
+                                    button_states[i] = pressed
+                                    continue
+                                if now - last_btn_time[i] >= DEBOUNCE_LIFTER:
+                                    button_states[i]     = pressed
+                                    last_btn_time[i]     = now
+                                    last_lifter_cmd_time = now
+                                    cmd_type, height, label = PRESET_MAP[i]
+                                    if cmd_type == "HOMING":
+                                        safe_send("HOMING\n")
+                                    elif cmd_type == "PRESET":
+                                        safe_send(f"PRESET,{height:.1f}\n")
+                                    elif cmd_type == "CUSTOM_CMD":
+                                        safe_send(height) # height di sini berisi perintah string seperti "SPEED,MAX\n"
+                                    elif cmd_type == "DISABLED":
+                                        pass
+                                        
+                                    print(f"🎯 {label}")
+                                else:
+                                    print(f"⛔ [{i}] debounce")
+                            else:
+                                if now - last_btn_time[i] >= DEBOUNCE_BTN:
+                                    button_states[i] = pressed
+                                    last_btn_time[i] = now
+                                    safe_send(f"BUTTON,{i},{pressed}\n")
+                                    print(f"BUTTON,{i},1")
+                                else:
+                                    print(f"⛔ [{i}] debounce")
                         else:
-                            print(f"⛔ [{i}] debounce")
-                    else:
-                        if now - last_btn_time[i] >= DEBOUNCE_BTN:
                             button_states[i] = pressed
-                            last_btn_time[i] = now
-                            safe_send(f"BUTTON,{i},{pressed}\n")
-                            print(f"BUTTON,{i},1")
-                        else:
-                            print(f"⛔ [{i}] debounce")
-                else:
-                    button_states[i] = pressed
-                    if i not in LIFTER_BTN_INDICES:
-                        safe_send(f"BUTTON,{i},{pressed}\n")
+                            if i not in LIFTER_BTN_INDICES:
+                                safe_send(f"BUTTON,{i},{pressed}\n")
 
-        # ============================================================
-        # TRIGGER L2 / R2
-        # ============================================================
-        for t, ax in enumerate(trigger_axis_indices):
-            pressed = 1 if j.get_axis(ax) > TRIGGER_THRESHOLD else 0
-            if pressed != trigger_states[t]:
-                if pressed == 1:
-                    if now - last_trig_time[t] >= DEBOUNCE_BTN:
-                        trigger_states[t] = pressed
-                        last_trig_time[t] = now
-                        safe_send(f"BUTTON,TRIG{t},{pressed}\n")
+                # ============================================================
+                # TRIGGER L2 / R2
+                # ============================================================
+                for t, ax in enumerate(trigger_axis_indices):
+                    if ax < j.get_numaxes():
+                        pressed = 1 if j.get_axis(ax) > TRIGGER_THRESHOLD else 0
+                        if pressed != trigger_states[t]:
+                            if pressed == 1:
+                                if now - last_trig_time[t] >= DEBOUNCE_BTN:
+                                    trigger_states[t] = pressed
+                                    last_trig_time[t] = now
+                                    safe_send(f"BUTTON,TRIG{t},{pressed}\n")
 
-                        # Keterangan Terminal untuk L2 dan R2
-                        if t == 0:  # Jika L2 (TRIG0) ditekan
-                            print("🎯 [L2] Gripper 1 Toggle")
-                        elif t == 1:  # Jika R2 (TRIG1) ditekan
-                            print("🎯 [R2] Gripper 2 Toggle")
-                    else:
-                        print(f"⛔ Trigger[{t}] debounce")
-                else:
-                    trigger_states[t] = pressed
-                    safe_send(f"BUTTON,TRIG{t},{pressed}\n")
+                                    # Keterangan Terminal untuk L2 dan R2
+                                    if t == 0:  # Jika L2 (TRIG0) ditekan
+                                        print("🎯 [L2] Gripper 1 Toggle")
+                                    elif t == 1:  # Jika R2 (TRIG1) ditekan
+                                        print("🎯 [R2] Gripper 2 Toggle")
+                                else:
+                                    print(f"⛔ Trigger[{t}] debounce")
+                            else:
+                                trigger_states[t] = pressed
+                                safe_send(f"BUTTON,TRIG{t},{pressed}\n")
 
-        # ============================================================
-        # D-PAD (HAT)
-        # ============================================================
-        if j.get_numhats() > 0:
-            hat = j.get_hat(0)
+                # ============================================================
+                # D-PAD (HAT)
+                # ============================================================
+                if j.get_numhats() > 0:
+                    hat = j.get_hat(0)
 
-            # Kirim saat state berubah (tekan / lepas)
-            if hat != last_hat and now - last_hat_time >= DEBOUNCE_HAT:
-                last_hat      = hat
-                last_hat_time = now
-                last_hat_send = now  # Reset timer repeat
-                dpad_active   = (hat != (0, 0))
-                safe_send(f"HAT,{hat[0]},{hat[1]}\n")
-                print(f"HAT: {hat[0]},{hat[1]}")
+                    # Kirim saat state berubah (tekan / lepas)
+                    if hat != last_hat and now - last_hat_time >= DEBOUNCE_HAT:
+                        last_hat      = hat
+                        last_hat_time = now
+                        last_hat_send = now  # Reset timer repeat
+                        dpad_active   = (hat != (0, 0))
+                        safe_send(f"HAT,{hat[0]},{hat[1]}\n")
+                        print(f"HAT: {hat[0]},{hat[1]}")
 
-            # Kirim ulang selama D-pad masih ditahan (repeat)
-            elif dpad_active and (now - last_hat_send >= DPAD_REPEAT_INTERVAL):
-                last_hat_send = now
-                safe_send(f"HAT,{last_hat[0]},{last_hat[1]}\n")
+                    # Kirim ulang selama D-pad masih ditahan (repeat)
+                    elif dpad_active and (now - last_hat_send >= DPAD_REPEAT_INTERVAL):
+                        last_hat_send = now
+                        safe_send(f"HAT,{last_hat[0]},{last_hat[1]}\n")
+
+            except pygame.error:
+                # Terputus di tengah operasi polling
+                handle_disconnect()
 
         time.sleep(0.02)  # ~50 Hz
 
